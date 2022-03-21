@@ -1,4 +1,56 @@
+from helpers.object_helpers import search_list_for_obj
 from .models import *
+
+
+def convert_DT_to_UTC(dt: str):
+    ''' 
+        Expecting `dt` to be a string formatted in ISO-8601 format without TZ info but known to be from GMT timezone - Converts to UTC ISO-8601 format
+    '''
+    # Get the tz offset part of string at my location (GMT)
+    gmt_offset_str = datetime.now().astimezone().isoformat()[-6:]
+    # Add offset to the `dt` string
+    dt = dt + gmt_offset_str
+    # transform to ISO 8601 format, TZ info will only be 'Z'
+    utc_dt = datetime.fromisoformat(dt).astimezone(utc).replace(tzinfo=None).isoformat() + 'Z'
+
+    return utc_dt
+
+
+def create_message_model(msg_id=1, single_message=None):
+    ''' Intended to be used on a json file from Telegram channel history download '''
+
+    # If a message object is not passed in - open json data and find the instance
+    if not single_message:
+        data = get_json_data('messages')
+        data = data['messages']
+        # Retrieve only the objects with 'type':'message'
+        m_data = search_list_for_obj(data, 'type', 'message')
+        # Target message from `msg_id`
+        message = search_list_for_obj(m_data, 'id', msg_id)
+
+        if not message or len(message) == 0:
+            raise Exception(f'\n\nMESSAGE WITH ID: "{msg_id}" NOT FOUND!')
+    else:
+        message = single_message
+
+    # Transform time value to ISO-UTCz format
+    message['date'] = convert_DT_to_UTC(message['date'])
+
+    # Create & return Message instance...
+    Msg = Message.create(**message)
+    Msg.save()
+    print(f'Created MESSAGE: {Msg.date}\tID:{Msg.id}')
+    return Msg
+
+
+def run_messages():
+    data = get_json_data('messages')['messages']
+    # Retrieve only the objects with 'type':'message'
+    msg_lst = search_list_for_obj(data, 'type', 'message')
+
+    for msg in msg_lst[0:20]:
+        m_id = msg['id']
+        create_message_model(None, msg)
 
 
 def create_city_model(city_id=1, single_city=None):
@@ -73,15 +125,6 @@ def get_json_data(filename):
     return jd
 
 
-def search_list_for_obj(lst: list, key: str, value: str):
-    ret_lst = [el for el in lst if el[key] == value]
-
-    if len(ret_lst) == 1:
-        return ret_lst[0]
-    print('\nFOUND MULTIPLE OBJECTS IN LIST!')
-    return ret_lst
-
-
 def run_cities():
     cities = get_json_data('cities')
     for city in cities:
@@ -101,3 +144,26 @@ def run_countries():
     for country in countries:
         c_id = country['id']
         create_country_model(c_id)
+
+
+# def get_required_keys():
+#     # TEMP: Getting required keys - used in create_message_model
+#     rKeys = []
+#     nrKeys = []
+
+#     lenOfMsgLst = len(msg_lst)
+
+#     for msg in msg_lst:
+#         keys = msg.keys()
+#         for k in keys:
+#             matches = search_list_for_obj(msg_lst, k, None)
+#             print(f"KEY:     {k}\nFOUND:   {len(matches)}\nOF:      {lenOfMsgLst}")
+
+#             if len(matches) == lenOfMsgLst and k not in rKeys:
+#                 rKeys.append(k)
+#             elif len(matches) != lenOfMsgLst and k not in nrKeys:
+#                 nrKeys.append(k)
+
+#     print('\n\nREQUIRED KEYS:\n\t', rKeys, '\nREQUIRED COUNT:\t', len(rKeys))
+#     print('\n\nOPTIONAL KEYS:\n\t', nrKeys, '\nOPTIONAL COUNT:\t', len(nrKeys))
+#     return rKeys
