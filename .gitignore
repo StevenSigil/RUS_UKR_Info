@@ -1,6 +1,8 @@
 .env
 *.sqlite3
 
+nlp_test.py
+
 __pycache__/
 migrations/
 templates/

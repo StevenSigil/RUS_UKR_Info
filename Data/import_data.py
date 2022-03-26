@@ -1,23 +1,94 @@
+import spacy
+from datetime import datetime
+
 from helpers.object_helpers import search_list_for_obj
-from .models import *
+from helpers.nlp_messages import setup_spacy, matches_subjVerbDobj, check_token_is_place
+from Data.models import *
 
 
-def convert_DT_to_UTC(dt: str):
-    ''' 
-        Expecting `dt` to be a string formatted in ISO-8601 format without TZ info but known to be from GMT timezone - Converts to UTC ISO-8601 format
+def create_EventMessage_from_TelegramMessage(telegram_message: TelegramMessage):
+    ''' Converts `TelegramMessage` instance into a new `MessageEvent` instance. 
+        Attempts to lift relevant keywords from `TelegramMessage.text` for brevity 
+        when displaying on maps.
     '''
-    # Get the tz offset part of string at my location (GMT)
-    gmt_offset_str = datetime.now().astimezone().isoformat()[-6:]
-    # Add offset to the `dt` string
-    dt = dt + gmt_offset_str
-    # transform to ISO 8601 format, TZ info will only be 'Z'
-    utc_dt = datetime.fromisoformat(dt).astimezone(utc).replace(tzinfo=None).isoformat() + 'Z'
 
-    return utc_dt
+    # Start Spacy and convert `telegram_message.text` to a `Spacy...Doc`
+    original_message = telegram_message
+    event_date = datetime.isoformat(telegram_message.date)
+    doc = setup_spacy(telegram_message.text)
+
+    subject = None
+    action = None
+    text = telegram_message.text  # Changes if tokens in text matches subjVerbDobj pattern
+    is_multi_sentence = None
+    contains_places = None
+    cities = []
+    states = []
+    countries = []
+    classification = None  # TODO
+
+    # Check how many sentences are in text -> assign to `is_multi_sentence`
+    is_multi_sentence = bool(len([sent for sent in doc.sents]) > 1)
+
+    for token in doc:
+
+        # Get subject->action->context extracts
+        matches_pattern = matches_subjVerbDobj(token)
+        if matches_pattern:
+            # Lift `subject`, `action`, `text` from result
+            subject = matches_pattern['subj']
+            action = matches_pattern['token']
+            text = ' '.join(list(matches_pattern.values()))
+
+        # Get City, State, Country places - Check if `token` is a 'GPE' `entity`
+        if token.ent_type_ == 'GPE':
+            # Use exact matcher -> sub func will handle if no exact match found.
+            entity = check_token_is_place(token, True)
+        else:
+            entity = check_token_is_place(token, False)
+
+        if entity:
+            if type(entity) == Country:
+                countries.append(entity)
+            if type(entity) == State:
+                states.append(entity)
+            if type(entity) == City:
+                cities.append(entity)
+
+        contains_places = bool(entity)
+
+        # TODO GET CLASSIFICATION!
+        # TODO HANDLE MULTI-SENTENCE CONDITIONS
+
+    # All variables retrieved to create `EventMessage`
+    newME = MessageEvent(text=text,
+                         original_message=original_message,
+                         event_date=event_date,
+                         subject=subject,
+                         action=action,
+                         classification=classification,
+                         is_multi_sentence=is_multi_sentence,
+                         contains_places=contains_places,
+                         )
+
+    newME.save()
+
+    # Reverse relation additions
+    if cities:
+        [city.messageevent_set.add(newME.id) for city in cities]
+    if states:
+        [state.messageevent_set.add(newME.id) for state in states]
+    if countries:
+        [country.messageevent_set.add(newME.id) for country in countries]
+
+    return newME
 
 
-def create_message_model(msg_id=1, single_message=None):
-    ''' Intended to be used on a json file from Telegram channel history download '''
+def create_TelegramMessage_model(msg_id=1, single_message=None):
+    ''' Creates a new `TelegramMessage` instance. 
+        Intended to be used on a json file from a Telegram channel history download. 
+            - Reference formatting of ~/../Data/message.json - or Telegram docs.
+    '''
 
     # If a message object is not passed in - open json data and find the instance
     if not single_message:
@@ -36,21 +107,11 @@ def create_message_model(msg_id=1, single_message=None):
     # Transform time value to ISO-UTCz format
     message['date'] = convert_DT_to_UTC(message['date'])
 
-    # Create & return Message instance...
-    Msg = Message.create(**message)
+    # Create & return TelegramMessage instance...
+    Msg = TelegramMessage.create(**message)
     Msg.save()
     print(f'Created MESSAGE: {Msg.date}\tID:{Msg.id}')
     return Msg
-
-
-def run_messages():
-    data = get_json_data('messages')['messages']
-    # Retrieve only the objects with 'type':'message'
-    msg_lst = search_list_for_obj(data, 'type', 'message')
-
-    for msg in msg_lst[0:20]:
-        m_id = msg['id']
-        create_message_model(None, msg)
 
 
 def create_city_model(city_id=1, single_city=None):
@@ -103,7 +164,8 @@ def create_state_model(state_id=5, single_state=None):
 def create_country_model(country_id=1, single_country=None):
     print("\nCOUNTRY ID:\t", 'country_id')
 
-    # If a country object is not passed in - open json data and find the instance
+    # If a country object is not passed in ->
+    # open json data and find the instance
     if not single_country:
         country_data = get_json_data('countries')
         # Target Country
@@ -116,6 +178,8 @@ def create_country_model(country_id=1, single_country=None):
     return Co.save()
 
 
+#####################################################################################
+################################## HELPERS/RUNNERS ##################################
 def get_json_data(filename):
     import json
 
@@ -123,6 +187,20 @@ def get_json_data(filename):
     with open(file, encoding='utf-8') as df:
         jd = json.loads(df.read())
     return jd
+
+
+def convert_DT_to_UTC(dt: str):
+    ''' 
+        Expecting `dt` to be a string formatted in ISO-8601 format without TZ info but known to be from GMT timezone - Converts to UTC ISO-8601 format
+    '''
+    # Get the tz offset part of string at my location (GMT)
+    gmt_offset_str = datetime.now().astimezone().isoformat()[-6:]
+    # Add offset to the `dt` string
+    dt = dt + gmt_offset_str
+    # transform to ISO 8601 format, TZ info will only be 'Z'
+    utc_dt = datetime.fromisoformat(dt).astimezone(utc).replace(tzinfo=None).isoformat() + 'Z'
+
+    return utc_dt
 
 
 def run_cities():
@@ -146,24 +224,11 @@ def run_countries():
         create_country_model(c_id)
 
 
-# def get_required_keys():
-#     # TEMP: Getting required keys - used in create_message_model
-#     rKeys = []
-#     nrKeys = []
+def run_messages():
+    data = get_json_data('messages')['messages']
+    # Retrieve only the objects with 'type':'message'
+    msg_lst = search_list_for_obj(data, 'type', 'message')
 
-#     lenOfMsgLst = len(msg_lst)
-
-#     for msg in msg_lst:
-#         keys = msg.keys()
-#         for k in keys:
-#             matches = search_list_for_obj(msg_lst, k, None)
-#             print(f"KEY:     {k}\nFOUND:   {len(matches)}\nOF:      {lenOfMsgLst}")
-
-#             if len(matches) == lenOfMsgLst and k not in rKeys:
-#                 rKeys.append(k)
-#             elif len(matches) != lenOfMsgLst and k not in nrKeys:
-#                 nrKeys.append(k)
-
-#     print('\n\nREQUIRED KEYS:\n\t', rKeys, '\nREQUIRED COUNT:\t', len(rKeys))
-#     print('\n\nOPTIONAL KEYS:\n\t', nrKeys, '\nOPTIONAL COUNT:\t', len(nrKeys))
-#     return rKeys
+    for msg in msg_lst[0:20]:
+        m_id = msg['id']
+        create_TelegramMessage_model(None, msg)
